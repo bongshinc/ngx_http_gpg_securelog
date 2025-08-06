@@ -53,30 +53,43 @@ ngx_http_gpg_securelog_init_gpg(ngx_conf_t *cf, ngx_http_gpg_securelog_conf_t *c
         return NGX_ERROR;
     }
 
-    FILE *f = fopen((char *)conf->publickey_file.data, "r");
-    if (!f) {
-        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "Failed to open public key: %s", conf->publickey_file.data);
-        return NGX_ERROR;
-    }
+FILE *f = fopen((char *)conf->publickey_file.data, "r");
+if (!f) {
+    ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
+        "Failed to open public key: %s", conf->publickey_file.data);
+    return NGX_ERROR;
+}
 
-    gpgme_data_t keydata;
-    err = gpgme_data_new_from_stream(&keydata, f);
+gpgme_data_t keydata;
+err = gpgme_data_new_from_stream(&keydata, f);
+if (err) {
+    ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
+        "gpgme_data_new_from_stream() failed: %s", gpgme_strerror(err));
     fclose(f);
-    if (err) {
-        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "gpgme_data_new_from_stream() failed");
-        return NGX_ERROR;
-    }
+    return NGX_ERROR;
+}
 
-    err = gpgme_op_import(gpg_ctx, keydata);
+// (1) Import public key
+err = gpgme_op_import(gpg_ctx, keydata);
+fclose(f); // ⬅️ 여기가 올바른 위치
+if (err) {
+    ngx_conf_log_error(NGX_LOG_ERR, cf, 0,
+        "gpgme_op_import() failed: %s", gpgme_strerror(err));
     gpgme_data_release(keydata);
+    return NGX_ERROR;
+}
+
+gpgme_data_release(keydata);
+
     if (err) {
         ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "gpgme_op_import() failed");
         return NGX_ERROR;
     }
 
-    // Optional: Replace NULL with fingerprint string for key filtering
-    err = gpgme_op_keylist_start(gpg_ctx, NULL, 0);
-    if (err) {
+// (2) Start keylist to retrieve key
+// Optional: Replace NULL with fingerprint string for key filtering
+err = gpgme_op_keylist_start(gpg_ctx, NULL, 0);
+if (err) {
         ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "gpgme_op_keylist_start() failed");
         return NGX_ERROR;
     }
@@ -88,6 +101,11 @@ ngx_http_gpg_securelog_init_gpg(ngx_conf_t *cf, ngx_http_gpg_securelog_conf_t *c
         return NGX_ERROR;
     }
 
+// (3) Error if the key is null
+if (gpg_key == NULL) {
+    ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "GPG key was not loaded (gpg_key is NULL)");
+    return NGX_ERROR;
+}
     gpgme_set_armor(gpg_ctx, 1);
     return NGX_OK;
 }

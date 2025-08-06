@@ -41,7 +41,7 @@ http {
 
 ## 📁 Log Filename Format
 | Rotation | Filename Example               |
-|:---------|-------------------------------:|
+|:---------|:-------------------------------|
 | Hourly   | `nginx-20250806-1300.log.gpg` |
 | Daily    | `nginx-20250806-0000.log.gpg` |
 | Weekly   | `nginx-2025W32-0000.log.gpg`  |

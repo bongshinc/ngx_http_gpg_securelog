@@ -1,162 +1,161 @@
+// ngx_http_gpg_securelog.c
+
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
-#include <sys/stat.h>
-#include <time.h>
 
-#define DEFAULT_GPG_KEY_DIR "conf/gpg_keys"
-#define DEFAULT_GPG_LOG_SUBDIR "securelog"
+#include <locale.h>
+#include <gpgme.h>
 
-typedef enum {
-    ROTATE_HOURLY,
-    ROTATE_DAILY,
-    ROTATE_WEEKLY,
-    ROTATE_MONTHLY
-} rotate_mode_t;
+#define DEFAULT_LOG_SUBDIR "securelog"
 
 typedef struct {
-    ngx_str_t publickey_file;   // 공개키 파일 경로
-    ngx_str_t log_path;         // 로그 저장 디렉토리
-    ngx_str_t rotation_mode;    // 로그 회전 주기
+    ngx_str_t  publickey_file;  // 공개키 경로
+    ngx_str_t  log_dir;         // 로그 디렉터리 경로
 } ngx_http_gpg_securelog_conf_t;
 
-// 기본 로그 경로를 동적으로 얻기 위한 함수 선언
-static ngx_str_t get_default_log_path(ngx_conf_t *cf);
+static gpgme_ctx_t gpg_ctx = NULL;
+static gpgme_key_t gpg_key = NULL;
 
-static ngx_int_t ngx_http_gpg_securelog_handler(ngx_http_request_t *r) {
+// GPGME 초기화 및 공개키 로드
+static ngx_int_t
+ngx_http_gpg_securelog_init_gpg(ngx_conf_t *cf, ngx_http_gpg_securelog_conf_t *conf)
+{
+    gpgme_error_t err;
+
+    setlocale(LC_ALL, "");
+    gpgme_check_version(NULL);
+
+    err = gpgme_new(&gpg_ctx);
+    if (err) {
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "gpgme_new() failed");
+        return NGX_ERROR;
+    }
+
+    FILE *f = fopen((char *)conf->publickey_file.data, "r");
+    if (!f) {
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "Failed to open public key file: %s", conf->publickey_file.data);
+        return NGX_ERROR;
+    }
+
+    gpgme_data_t keydata;
+    err = gpgme_data_new_from_stream(&keydata, f);
+    fclose(f);
+    if (err) {
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "gpgme_data_new_from_stream() failed");
+        return NGX_ERROR;
+    }
+
+    err = gpgme_op_import(gpg_ctx, keydata);
+    gpgme_data_release(keydata);
+    if (err) {
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "gpgme_op_import() failed");
+        return NGX_ERROR;
+    }
+
+    err = gpgme_op_keylist_start(gpg_ctx, NULL, 0);
+    if (err) {
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "gpgme_op_keylist_start() failed");
+        return NGX_ERROR;
+    }
+
+    err = gpgme_op_keylist_next(gpg_ctx, &gpg_key);
+    gpgme_op_keylist_end(gpg_ctx);
+    if (err) {
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "gpgme_op_keylist_next() failed");
+        return NGX_ERROR;
+    }
+
+    gpgme_set_armor(gpg_ctx, 1);
+
+    return NGX_OK;
+}
+
+// 메모리 내 로그 암호화
+static ngx_int_t
+gpg_encrypt_log(ngx_pool_t *pool, const u_char *plaintext, size_t len, ngx_str_t *out)
+{
+    gpgme_data_t plain, cipher;
+    gpgme_error_t err;
+
+    err = gpgme_data_new_from_mem(&plain, plaintext, len, 0);
+    if (err) return NGX_ERROR;
+
+    err = gpgme_data_new(&cipher);
+    if (err) {
+        gpgme_data_release(plain);
+        return NGX_ERROR;
+    }
+
+    err = gpgme_op_encrypt(gpg_ctx, gpg_key, GPGME_ENCRYPT_ALWAYS_TRUST, plain, cipher);
+    gpgme_data_release(plain);
+    if (err) {
+        gpgme_data_release(cipher);
+        return NGX_ERROR;
+    }
+
+    off_t size = gpgme_data_seek(cipher, 0, SEEK_END);
+    gpgme_data_seek(cipher, 0, SEEK_SET);
+
+    u_char *buf = ngx_palloc(pool, size);
+    if (!buf) {
+        gpgme_data_release(cipher);
+        return NGX_ERROR;
+    }
+
+    ssize_t read_len = gpgme_data_read(cipher, buf, size);
+    gpgme_data_release(cipher);
+    if (read_len < 0) return NGX_ERROR;
+
+    out->data = buf;
+    out->len = (size_t)read_len;
+
+    return NGX_OK;
+}
+
+// 로그 핸들러 (예: 로그 작성시 호출)
+static ngx_int_t
+ngx_http_gpg_securelog_handler(ngx_http_request_t *r)
+{
     ngx_http_gpg_securelog_conf_t *conf;
     conf = ngx_http_get_module_main_conf(r, ngx_http_gpg_securelog);
 
-    // 요청 기본 정보 추출
-    ngx_str_t remote_addr = r->connection->addr_text;
-    ngx_str_t method = r->method_name;
-    ngx_str_t uri = r->uri;
-
-    ngx_str_t user_agent;
-    if (r->headers_in.user_agent) {
-        user_agent = r->headers_in.user_agent->value;
-    } else {
-        user_agent = ngx_string("-");
-    }
-
-    time_t rawtime;
-    struct tm *timeinfo;
-    char date_buf[32];
-    char log_buf[1024];
-    char cmd_buf[4096];
-
-    time(&rawtime);
-    timeinfo = localtime(&rawtime);
-
-    // 로그 회전 모드 결정 (기본 DAILY)
-    rotate_mode_t mode = ROTATE_DAILY;
-    if (conf->rotation_mode.len > 0) {
-        if (ngx_strncmp(conf->rotation_mode.data, (u_char *)"hourly", 6) == 0) {
-            mode = ROTATE_HOURLY;
-        } else if (ngx_strncmp(conf->rotation_mode.data, (u_char *)"weekly", 6) == 0) {
-            mode = ROTATE_WEEKLY;
-        } else if (ngx_strncmp(conf->rotation_mode.data, (u_char *)"monthly", 7) == 0) {
-            mode = ROTATE_MONTHLY;
-        }
-    }
-
-    switch (mode) {
-        case ROTATE_HOURLY:
-            strftime(date_buf, sizeof(date_buf), "%Y%m%d-%H00", timeinfo);
-            break;
-        case ROTATE_DAILY:
-            strftime(date_buf, sizeof(date_buf), "%Y%m%d-0000", timeinfo);
-            break;
-        case ROTATE_WEEKLY: {
-            int week = timeinfo->tm_yday / 7 + 1;
-            snprintf(date_buf, sizeof(date_buf), "%04dW%02d-0000", timeinfo->tm_year + 1900, week);
-            break;
-        }
-        case ROTATE_MONTHLY:
-            strftime(date_buf, sizeof(date_buf), "%Y%m-0000", timeinfo);
-            break;
-    }
-
-    snprintf(log_buf, sizeof(log_buf),
-             "%s [%s] \"%.*s %.*s\" \"%.*s\"\n",
-             (char *)remote_addr.data,
-             date_buf,
-             (int)method.len, (char *)method.data,
-             (int)uri.len, (char *)uri.data,
-             (int)user_agent.len, (char *)user_agent.data);
-
-    // 로그 저장 경로 (conf 설정 없으면 기본값)
-    char *log_path = NULL;
-    if (conf->log_path.len > 0) {
-        log_path = (char *)ngx_pstrdup(r->pool, &conf->log_path);
-    } else {
-        // 기본값: ${NGINX_LOGS_PATH}/securelog
-        ngx_str_t default_path = get_default_log_path(r->connection->log->file->log_level == 0 ? r->pool : r->pool);  // 그냥 pool 넘김
-        log_path = (char *)ngx_pstrdup(r->pool, &default_path);
-    }
-
-    // 공개키 파일 (필수)
     if (conf->publickey_file.len == 0) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "gpg_log_publickey_file is not configured");
+        return NGX_DECLINED;
+    }
+
+    u_char logmsg[1024];
+    ngx_snprintf(logmsg, sizeof(logmsg),
+                 "%V \"%V %V\" \"%V\"\n",
+                 &r->connection->addr_text,
+                 &r->method_name,
+                 &r->uri,
+                 r->headers_in.user_agent ? &r->headers_in.user_agent->value : &ngx_null_string);
+
+    ngx_str_t encrypted_log;
+    if (gpg_encrypt_log(r->pool, logmsg, ngx_strlen(logmsg), &encrypted_log) != NGX_OK) {
         return NGX_ERROR;
     }
 
-    char *pubkey_file = (char *)ngx_pstrdup(r->pool, &conf->publickey_file);
+    // 로그 파일 경로 만들기
+    u_char log_file_path[NGX_MAX_PATH];
+    ngx_snprintf(log_file_path, NGX_MAX_PATH, "%V/nginx.log.gpg", &conf->log_dir);
 
-    // 디렉토리 존재 확인 및 없으면 생성 (간단히)
-    struct stat st;
-    if (stat(log_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
-        mkdir(log_path, 0700);
+    FILE *fp = fopen((char *)log_file_path, "a");
+    if (!fp) {
+        return NGX_ERROR;
     }
 
-    // GPG 암호화 명령어 작성
-    snprintf(cmd_buf, sizeof(cmd_buf),
-             "echo \"%s\" | gpg --encrypt --recipient-file %s --output %s/nginx-%s.log.gpg --batch --yes --trust-model always --armor --encrypt",
-             log_buf, pubkey_file, log_path, date_buf);
-
-    int ret = system(cmd_buf);
-    (void)ret;
+    fwrite(encrypted_log.data, 1, encrypted_log.len, fp);
+    fclose(fp);
 
     return NGX_OK;
 }
 
-static ngx_int_t ngx_http_gpg_securelog_init(ngx_conf_t *cf) {
-    ngx_http_handler_pt        *h;
-    ngx_http_core_main_conf_t  *cmcf;
-
-    cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
-
-    h = ngx_array_push(&cmcf->phases[NGX_HTTP_LOG_PHASE].handlers);
-    if (h == NULL) {
-        return NGX_ERROR;
-    }
-
-    *h = ngx_http_gpg_securelog_handler;
-
-    return NGX_OK;
-}
-
-// NGINX 로그 경로 하위 securelog 디렉토리 기본값 반환
-static ngx_str_t get_default_log_path(ngx_conf_t *cf) {
-    ngx_str_t logs_path = ngx_string("/usr/local/nginx/logs");
-    ngx_str_t securelog_subdir = ngx_string("/" DEFAULT_GPG_LOG_SUBDIR);
-
-    // cf->cycle->log? 등 더 정확한 경로를 얻는 방법도 있음
-    // 여기선 하드코딩 또는 사용자 설정으로 수정 가능
-
-    // 임시로 동적 할당 없이 정적 배열로 처리
-    static u_char path_buf[256];
-    ngx_memcpy(path_buf, logs_path.data, logs_path.len);
-    ngx_memcpy(path_buf + logs_path.len, securelog_subdir.data, securelog_subdir.len);
-    path_buf[logs_path.len + securelog_subdir.len] = '\0';
-
-    ngx_str_t full_path = {logs_path.len + securelog_subdir.len, path_buf};
-
-    return full_path;
-}
-
-static void *ngx_http_gpg_securelog_create_main_conf(ngx_conf_t *cf) {
+// 설정 생성
+static void *
+ngx_http_gpg_securelog_create_conf(ngx_conf_t *cf)
+{
     ngx_http_gpg_securelog_conf_t *conf;
 
     conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_gpg_securelog_conf_t));
@@ -164,79 +163,74 @@ static void *ngx_http_gpg_securelog_create_main_conf(ngx_conf_t *cf) {
         return NULL;
     }
 
-    conf->publickey_file.len = 0;
-    conf->publickey_file.data = NULL;
+    // 기본 로그 디렉터리: NGINX 기본 로그 경로 + "/securelog"
+    ngx_str_t default_log_dir = ngx_string(DEFAULT_LOG_SUBDIR);
 
-    conf->log_path.len = 0;
-    conf->log_path.data = NULL;
-
-    conf->rotation_mode.len = 0;
-    conf->rotation_mode.data = NULL;
+    conf->log_dir.len = sizeof(DEFAULT_LOG_SUBDIR) - 1;
+    conf->log_dir.data = ngx_pstrdup(cf->pool, default_log_dir.data);
 
     return conf;
 }
 
-static char *ngx_http_gpg_securelog_set_publickey(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+// 설정 초기화
+static char *
+ngx_http_gpg_securelog_init_conf(ngx_conf_t *cf, void *conf)
+{
     ngx_http_gpg_securelog_conf_t *gconf = conf;
-    ngx_str_t *value = cf->args->elts;
 
-    if (value[1].len == 0) {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "empty gpg_log_publickey_file");
-        return NGX_CONF_ERROR;
+    if (gconf->publickey_file.len == 0) {
+        ngx_conf_log_error(NGX_LOG_WARN, cf, 0, "gpg_log_publickey_file is not set");
     }
 
-    gconf->publickey_file = value[1];
+    if (gpg_ctx == NULL && gconf->publickey_file.len > 0) {
+        if (ngx_http_gpg_securelog_init_gpg(cf, gconf) != NGX_OK) {
+            return NGX_CONF_ERROR;
+        }
+    }
 
     return NGX_CONF_OK;
 }
 
+// NGINX 설정 디렉티브
 static ngx_command_t ngx_http_gpg_securelog_commands[] = {
     {
         ngx_string("gpg_log_publickey_file"),
         NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
-        ngx_http_gpg_securelog_set_publickey,
+        ngx_conf_set_str_slot,
         NGX_HTTP_MAIN_CONF_OFFSET,
         offsetof(ngx_http_gpg_securelog_conf_t, publickey_file),
         NULL
     },
     {
-        ngx_string("gpg_log_path"),
+        ngx_string("gpg_log_dir"),
         NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
         ngx_conf_set_str_slot,
         NGX_HTTP_MAIN_CONF_OFFSET,
-        offsetof(ngx_http_gpg_securelog_conf_t, log_path),
-        NULL
-    },
-    {
-        ngx_string("gpg_log_rotation"),
-        NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
-        ngx_conf_set_str_slot,
-        NGX_HTTP_MAIN_CONF_OFFSET,
-        offsetof(ngx_http_gpg_securelog_conf_t, rotation_mode),
+        offsetof(ngx_http_gpg_securelog_conf_t, log_dir),
         NULL
     },
     ngx_null_command
 };
 
+// 모듈 컨텍스트
 static ngx_http_module_t ngx_http_gpg_securelog_module_ctx = {
-    NULL,                                  /* preconfiguration */
-    ngx_http_gpg_securelog_init,           /* postconfiguration */
-
-    ngx_http_gpg_securelog_create_main_conf,  /* create main configuration */
-    NULL,                                  /* init main configuration */
-
-    NULL,                                  /* create server configuration */
-    NULL,                                  /* merge server configuration */
-
-    NULL,                                  /* create location configuration */
-    NULL                                   /* merge location configuration */
+    NULL,                      /* preconfiguration */
+    NULL,                      /* postconfiguration */
+    ngx_http_gpg_securelog_create_conf, /* create main configuration */
+    ngx_http_gpg_securelog_init_conf,   /* init main configuration */
+    NULL,
+    NULL,
+    NULL,
+    NULL
 };
 
+// 모듈 정의
 ngx_module_t ngx_http_gpg_securelog = {
     NGX_MODULE_V1,
-    &ngx_http_gpg_securelog_module_ctx,
-    ngx_http_gpg_securelog_commands,
-    NGX_HTTP_MODULE,
+    &ngx_http_gpg_securelog_module_ctx, /* module context */
+    ngx_http_gpg_securelog_commands,    /* module directives */
+    NGX_HTTP_MODULE,                    /* module type */
     NULL, NULL, NULL, NULL, NULL, NULL, NULL,
     NGX_MODULE_V1_PADDING
 };
+

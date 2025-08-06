@@ -1,5 +1,18 @@
+# Name of the addon (used internally)
 ngx_addon_name=ngx_http_gpg_securelog
+
+# This module is an HTTP handler module
 ngx_module_type=HTTP
+
+# The module name as declared in C source (ngx_module_t ngx_http_gpg_securelog)
 ngx_module_name=ngx_http_gpg_securelog
+
+# Path to the source file (relative to this config's location)
 ngx_module_srcs="$ngx_addon_dir/src/ngx_http_gpg_securelog.c"
+
+# (Optional) You can add extra compiler flags if needed, e.g.:
+# CFLAGS="$CFLAGS -Wall"
+
+# Load standard module integration logic
 . auto/module
+

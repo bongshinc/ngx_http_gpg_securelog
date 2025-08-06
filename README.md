@@ -15,11 +15,11 @@ A custom NGINX module for secure logging using GPG encryption. This module captu
 
 1. Clone or copy the module source into your NGINX source tree
 2. Rebuild NGINX with the module:
-
 ```bash
 ./configure --add-module=/path/to/ngx_http_gpg_securelog
 make
 sudo make install
+```
 
 ## ⚙ Configuration (nginx.conf)
 ```nginx
@@ -37,20 +37,22 @@ http {
         }
     }
 }
+```
 
 ## 📁 Log Filename Format
+```
 | Rotation | Filename Example               |
 |:---------|-------------------------------:|
 | Hourly   | `nginx-20250806-1300.log.gpg` |
 | Daily    | `nginx-20250806-0000.log.gpg` |
 | Weekly   | `nginx-2025W32-0000.log.gpg`  |
 | Monthly  | `nginx-202508-0000.log.gpg`   |
-
+```
 
 ## 🔒 Security Notes
-Logs are encrypted using the configured GPG recipient
-Only the recipient with the private key can decrypt the logs
-GPG must be installed and configured on the system
+- Logs are encrypted using the configured GPG recipient
+- Only the recipient with the private key can decrypt the logs
+- GPG must be installed and configured on the system
 
 ## 📄 License
 This module is released under the MIT License. See the LICENSE file for details.

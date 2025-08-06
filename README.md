@@ -23,6 +23,20 @@ make
 sudo make install
 ```
 
+
+## 📦 Module Loading
+
+This module is statically compiled into NGINX during the build process.
+
+You do **not** need to add `load_module` to your `nginx.conf`.
+
+To verify that the module is loaded, run:
+
+```bash
+nginx -V
+```
+
+
 ## ⚙ Configuration (nginx.conf)
 ```nginx
 http {

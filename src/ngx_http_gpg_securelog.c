@@ -157,7 +157,7 @@ static ngx_int_t
 ngx_http_gpg_securelog_handler(ngx_http_request_t *r)
 {
     ngx_http_gpg_securelog_conf_t *conf;
-    conf = ngx_http_get_module_main_conf(r, ngx_http_gpg_securelog);
+    conf = ngx_http_get_module_srv_conf(r, ngx_http_gpg_securelog);
 
     if (conf->publickey_file.len == 0 || gpg_ctx == NULL) {
         return NGX_DECLINED;
@@ -244,7 +244,7 @@ ngx_http_gpg_securelog_init_conf(ngx_conf_t *cf, void *conf)
 static ngx_command_t ngx_http_gpg_securelog_commands[] = {
     {
         ngx_string("gpg_log_publickey_file"),
-        NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+	NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
         ngx_conf_set_str_slot,
         NGX_HTTP_MAIN_CONF_OFFSET,
         offsetof(ngx_http_gpg_securelog_conf_t, publickey_file),
@@ -252,7 +252,7 @@ static ngx_command_t ngx_http_gpg_securelog_commands[] = {
     },
     {
         ngx_string("gpg_log_dir"),
-        NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+	NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
         ngx_conf_set_str_slot,
         NGX_HTTP_MAIN_CONF_OFFSET,
         offsetof(ngx_http_gpg_securelog_conf_t, log_dir),
@@ -264,10 +264,12 @@ static ngx_command_t ngx_http_gpg_securelog_commands[] = {
 // === Module context & export ===
 static ngx_http_module_t ngx_http_gpg_securelog_module_ctx = {
     NULL,
-    ngx_http_gpg_securelog_postconfig,
+    NULL, // ngx_http_gpg_securelog_postconfig,
+    NULL, // ngx_http_gpg_securelog_init_conf,
     ngx_http_gpg_securelog_create_conf,
-    ngx_http_gpg_securelog_init_conf,
-    NULL, NULL, NULL, NULL
+    NULL,
+    NULL,
+    NULL
 };
 
 ngx_module_t ngx_http_gpg_securelog = {

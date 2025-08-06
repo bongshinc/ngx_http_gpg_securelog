@@ -22,6 +22,7 @@ make
 sudo make install
 
 ## ⚙ Configuration (nginx.conf)
+```nginx
 http {
     gpg_log_recipient securelog@example.com;
     gpg_log_path /usr/local/nginx/temp/securelog;

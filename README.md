@@ -3,6 +3,7 @@ NGINX module for encrypted logging using GPG
 
 A custom NGINX module for secure logging using GPG encryption. This module captures HTTP request metadata and writes it to encrypted log files, with support for flexible rotation intervals and timestamped filenames.
 
+
 ## 🔐 Features
 
 - Logs client IP, request method, URI, and User-Agent
@@ -10,6 +11,7 @@ A custom NGINX module for secure logging using GPG encryption. This module captu
 - Supports log rotation by hour, day, week, or month
 - Automatically generates timestamped log filenames
 - Uses default values if configuration is missing
+
 
 ## 🛠 Installation
 
@@ -53,8 +55,10 @@ http {
 - Only the recipient with the private key can decrypt the logs
 - GPG must be installed and configured on the system
 
+
 ## 📄 License
 This module is released under the MIT License. See the LICENSE file for details.
+
 
 ## 🤝 Contributions
 Pull requests and issues are welcome. Please ensure your code is clean and well-documented.

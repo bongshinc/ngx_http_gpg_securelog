@@ -34,7 +34,7 @@ nginx -V                                       ← Check the module
 ```
 ```nginx
 ...
-7:load_module modules/ngx_http_my_module.so;   ← Add in nginx.conf
+load_module modules/ngx_http_my_module.so;   ← Add in nginx.conf
 ...
 ```
 

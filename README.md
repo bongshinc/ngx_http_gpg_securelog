@@ -30,10 +30,10 @@ This module is statically compiled into NGINX during the build process.
 You do **not** need to add `load_module` to your `nginx.conf`.
 To verify that the module is loaded, run:
 ```bash
-nginx -V
+nginx -V                                       ← Check the module
 ```
 ```nginx
-load_module modules/ngx_http_my_module.so;
+load_module modules/ngx_http_my_module.so;     ← Add in nginx.conf
 ```
 
 Make sure the path matches where the .so file was installed.

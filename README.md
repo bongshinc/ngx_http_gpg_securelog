@@ -33,7 +33,9 @@ To verify that the module is loaded, run:
 nginx -V                                       ← Check the module
 ```
 ```nginx
-load_module modules/ngx_http_my_module.so;     ← Add in nginx.conf
+...
+7:load_module modules/ngx_http_my_module.so;   ← Add in nginx.conf
+...
 ```
 
 Make sure the path matches where the .so file was installed.

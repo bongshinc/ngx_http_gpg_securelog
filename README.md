@@ -23,17 +23,30 @@ make
 sudo make install
 ```
 
+## 🔌 Loading the Module
 
-## 📦 Module Loading
-
+If you built this module as a **dynamic module**, you must explicitly load it in your `nginx.conf`:
 This module is statically compiled into NGINX during the build process.
-
 You do **not** need to add `load_module` to your `nginx.conf`.
-
 To verify that the module is loaded, run:
-
 ```bash
 nginx -V
+```
+```nginx
+load_module modules/ngx_http_my_module.so;
+```
+
+Make sure the path matches where the .so file was installed.
+For example, if you installed NGINX via package manager, the default module path might be /etc/nginx/modules/.
+
+To verify the module is loaded, run:
+```bash
+nginx -t
+```
+
+If successful, restart NGINX:
+```bash
+sudo systemctl restart nginx
 ```
 
 

@@ -146,7 +146,8 @@ ngx_http_gpg_securelog_handler(ngx_http_request_t *r)
     }
 
     u_char logmsg[1024];
-    ngx_str_t *ua = r->headers_in.user_agent ? &r->headers_in.user_agent->value : &ngx_null_string;
+    static ngx_str_t empty_ua = ngx_null_string;
+    ngx_str_t *ua = r->headers_in.user_agent ? &r->headers_in.user_agent->value : &empty_ua;
 
     ngx_snprintf(logmsg, sizeof(logmsg),
                  "%V \"%V %V\" \"%V\"\n",

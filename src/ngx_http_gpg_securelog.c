@@ -1,23 +1,44 @@
-// ngx_http_gpg_securelog.c
+/**
+ * ngx_http_gpg_securelog.c
+ * -------------------------
+ * Author: 최봉신 (Bongshin, Choi)
+ * Version: 1.0.0
+ * Date: 2025-08-06
+ *
+ * Summary:
+ * This NGINX module securely logs request information by encrypting it using GPGME with a public key.
+ * Encrypted logs are saved to a specified directory as armored GPG files.
+ *
+ * Usage:
+ *   nginx.conf
+ *     gpg_log_publickey_file /path/to/public.key;
+ *     gpg_log_dir /var/log/securelog;
+ *
+ * Build:
+ *   ./configure --add-module=/path/to/ngx_http_gpg_securelog
+ *   make && make install
+ */
 
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
-
 #include <locale.h>
 #include <gpgme.h>
 
 #define DEFAULT_LOG_SUBDIR "securelog"
 
 typedef struct {
-    ngx_str_t  publickey_file;  // Path to public key
-    ngx_str_t  log_dir;         // Log directory path
+    ngx_str_t publickey_file;
+    ngx_str_t log_dir;
 } ngx_http_gpg_securelog_conf_t;
 
 static gpgme_ctx_t gpg_ctx = NULL;
 static gpgme_key_t gpg_key = NULL;
 
-// GPGME initialization and public key import
+// Forward declaration of module symbol for handler
+extern ngx_module_t ngx_http_gpg_securelog;
+
+// === GPGME Initialization ===
 static ngx_int_t
 ngx_http_gpg_securelog_init_gpg(ngx_conf_t *cf, ngx_http_gpg_securelog_conf_t *conf)
 {
@@ -34,7 +55,7 @@ ngx_http_gpg_securelog_init_gpg(ngx_conf_t *cf, ngx_http_gpg_securelog_conf_t *c
 
     FILE *f = fopen((char *)conf->publickey_file.data, "r");
     if (!f) {
-        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "Failed to open public key file: %s", conf->publickey_file.data);
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "Failed to open public key: %s", conf->publickey_file.data);
         return NGX_ERROR;
     }
 
@@ -53,6 +74,7 @@ ngx_http_gpg_securelog_init_gpg(ngx_conf_t *cf, ngx_http_gpg_securelog_conf_t *c
         return NGX_ERROR;
     }
 
+    // Optional: Replace NULL with fingerprint string for key filtering
     err = gpgme_op_keylist_start(gpg_ctx, NULL, 0);
     if (err) {
         ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "gpgme_op_keylist_start() failed");
@@ -70,7 +92,7 @@ ngx_http_gpg_securelog_init_gpg(ngx_conf_t *cf, ngx_http_gpg_securelog_conf_t *c
     return NGX_OK;
 }
 
-// Encrypt log message in memory
+// === In-memory encryption ===
 static ngx_int_t
 gpg_encrypt_log(ngx_pool_t *pool, const u_char *plaintext, size_t len, ngx_str_t *out)
 {
@@ -109,24 +131,22 @@ gpg_encrypt_log(ngx_pool_t *pool, const u_char *plaintext, size_t len, ngx_str_t
 
     out->data = buf;
     out->len = (size_t)read_len;
-
     return NGX_OK;
 }
 
-// Request handler to log encrypted messages
+// === Request log handler ===
 static ngx_int_t
 ngx_http_gpg_securelog_handler(ngx_http_request_t *r)
 {
     ngx_http_gpg_securelog_conf_t *conf;
     conf = ngx_http_get_module_main_conf(r, ngx_http_gpg_securelog);
 
-    if (conf->publickey_file.len == 0) {
+    if (conf->publickey_file.len == 0 || gpg_ctx == NULL) {
         return NGX_DECLINED;
     }
 
     u_char logmsg[1024];
-    ngx_str_t empty_ua = ngx_string("");
-    ngx_str_t *ua = r->headers_in.user_agent ? &r->headers_in.user_agent->value : &empty_ua;
+    ngx_str_t *ua = r->headers_in.user_agent ? &r->headers_in.user_agent->value : &ngx_null_string;
 
     ngx_snprintf(logmsg, sizeof(logmsg),
                  "%V \"%V %V\" \"%V\"\n",
@@ -140,50 +160,59 @@ ngx_http_gpg_securelog_handler(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
-    // Build log file path
     u_char log_file_path[NGX_MAX_PATH];
     ngx_snprintf(log_file_path, NGX_MAX_PATH, "%V/nginx.log.gpg", &conf->log_dir);
 
     FILE *fp = fopen((char *)log_file_path, "a");
-    if (!fp) {
-        return NGX_ERROR;
-    }
+    if (!fp) return NGX_ERROR;
 
     fwrite(encrypted_log.data, 1, encrypted_log.len, fp);
     fclose(fp);
-
     return NGX_OK;
 }
 
-// Create module configuration
+// === Postconfig: register handler ===
+static ngx_int_t
+ngx_http_gpg_securelog_postconfig(ngx_conf_t *cf)
+{
+    ngx_http_handler_pt        *h;
+    ngx_http_core_main_conf_t  *cmcf;
+
+    cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
+
+    h = ngx_array_push(&cmcf->phases[NGX_HTTP_LOG_PHASE].handlers);
+    if (h == NULL) {
+        return NGX_ERROR;
+    }
+
+    *h = ngx_http_gpg_securelog_handler;
+    return NGX_OK;
+}
+
+// === Configuration ===
 static void *
 ngx_http_gpg_securelog_create_conf(ngx_conf_t *cf)
 {
     ngx_http_gpg_securelog_conf_t *conf;
 
     conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_gpg_securelog_conf_t));
-    if (conf == NULL) {
-        return NULL;
-    }
+    if (conf == NULL) return NULL;
 
-    static ngx_str_t default_log_dir = ngx_string(DEFAULT_LOG_SUBDIR);
-    conf->log_dir.data = ngx_pstrdup(cf->pool, &default_log_dir);
-    conf->log_dir.len = default_log_dir.len;
-
+    ngx_str_set(&conf->log_dir, DEFAULT_LOG_SUBDIR);
     return conf;
 }
 
-// Initialize module configuration
 static char *
 ngx_http_gpg_securelog_init_conf(ngx_conf_t *cf, void *conf)
 {
     ngx_http_gpg_securelog_conf_t *gconf = conf;
 
     if (gconf->publickey_file.len == 0) {
-        ngx_conf_log_error(NGX_LOG_WARN, cf, 0, "gpg_log_publickey_file is not set");
+        ngx_conf_log_error(NGX_LOG_WARN, cf, 0, "gpg_log_publickey_file not set");
+        return NGX_CONF_OK;
     }
 
-    if (gpg_ctx == NULL && gconf->publickey_file.len > 0) {
+    if (gpg_ctx == NULL) {
         if (ngx_http_gpg_securelog_init_gpg(cf, gconf) != NGX_OK) {
             return NGX_CONF_ERROR;
         }
@@ -192,7 +221,7 @@ ngx_http_gpg_securelog_init_conf(ngx_conf_t *cf, void *conf)
     return NGX_CONF_OK;
 }
 
-// Define configuration directives
+// === Directives ===
 static ngx_command_t ngx_http_gpg_securelog_commands[] = {
     {
         ngx_string("gpg_log_publickey_file"),
@@ -213,16 +242,15 @@ static ngx_command_t ngx_http_gpg_securelog_commands[] = {
     ngx_null_command
 };
 
-// Define module context
+// === Module context & export ===
 static ngx_http_module_t ngx_http_gpg_securelog_module_ctx = {
-    NULL,                              /* preconfiguration */
-    NULL,                              /* postconfiguration */
+    NULL,
+    ngx_http_gpg_securelog_postconfig,
     ngx_http_gpg_securelog_create_conf,
     ngx_http_gpg_securelog_init_conf,
     NULL, NULL, NULL, NULL
 };
 
-// Export the module
 ngx_module_t ngx_http_gpg_securelog = {
     NGX_MODULE_V1,
     &ngx_http_gpg_securelog_module_ctx,
